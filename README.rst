@@ -14,7 +14,7 @@ imappy
 
 imappy is a utility multitool for cleaning up some IMAP problems that I need to deal with
 
-* Free software: BSD license
+* Free software: MIT license
 * Documentation: http://imappy.rtfd.org.
 
 Features
