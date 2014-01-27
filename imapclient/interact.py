@@ -37,11 +37,15 @@ def command_line():
             p.error('If -f/--file is given no other options can be used')
         # Use the options in the config file
         opts = parse_config_file(opts.file)
+        if not getattr(opts, "password"):
+            setattr(opts, "password", getpass("password: "))
     else:
         # Get compulsory options if not given on the command line
         for opt_name in ('host', 'username', 'password'):
             if not getattr(opts, opt_name):
                 setattr(opts, opt_name, getpass(opt_name + ': '))
+        # insist on SSL
+        setattr(opts, "ssl", "true")
         # Options not supported on the command line
         opts.oauth = False
         opts.oauth2 = False
