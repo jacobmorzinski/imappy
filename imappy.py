@@ -15,6 +15,7 @@ import imapclient.six as six
 import copy
 import email
 import base64
+import re
 
 try:
     from ConfigParser import SafeConfigParser
@@ -22,17 +23,25 @@ except ImportError:
     from configparser import SafeConfigParser
 from imapclient.config import parse_config_file, create_client_from_config
 
-# Unbuffered stdout
-class Unbuffered:
-   def __init__(self, stream):
-       self.stream = stream
-   def write(self, data):
-       self.stream.write(data)
-       self.stream.flush()
-   def __getattr__(self, attr):
-       return getattr(self.stream, attr)
+import HTMLParser
 
-# sys.stdout = Unbuffered(sys.stdout)
+
+class MyHTMLParser(HTMLParser.HTMLParser):
+    def __init__(self):
+        self.reset()
+        self.mydata = ""
+        self.mytags = []
+    def handle_starttag(self, tag, attrs):
+        self.mytags.append(tag)
+    def handle_data(self, data):
+        # remove runs of whitespace, and at start+end
+        data = re.sub(r'\s+', ' ', data)
+        data = data.strip()
+        self.mydata += data
+    def clean(self):
+        self.mydata = ""
+        self.mytags = []
+
 
 class Message(object):
     """
@@ -62,6 +71,7 @@ class Message(object):
         temp = fmt.format(self.server, self.folder, self.uidvalidity, self.uid)
         temp += str(self.message)
         return(temp[:1000])
+
 
 def get_conf(conf_file='~/.imappy.ini'):
     global config
@@ -110,7 +120,7 @@ class IMAPPYClient(imapclient.IMAPClient):
         print("Got %d bodies." % len(self.bodies), file=sys.stderr)
 
 
-    def find_candidates(self,uids=None):
+    def analyze_bodies(self,uids=None):
         if (uids is not None):
             self.get_bodies(uids)
         self.candidates = {}
@@ -135,9 +145,20 @@ class IMAPPYClient(imapclient.IMAPClient):
               file=sys.stderr)
 
 
+    def print_candidate_summary(self, uid):
+        """Print a summary of a candidate,
+        indexed by uid (its key in the dict of candidates)."""
+        envelope = self.candidates[uid]['ENVELOPE']
+        d = envelope[0]
+        s = envelope[1]
+        f = "{0} <{2}@{3}>".format( *(envelope[2][0][0:4]))
+        t = "{0} <{2}@{3}>".format( *(envelope[5][0][0:4]))
+        print("Date: {}\nSubject: {}\nFrom: {}\nTo: {}".format(d,s,f,t))
+
     # DANGER DANGER doesn't have enough error handling
     # Don't call it from wrong folder, without proper preparation, etc.
-    def fetch_rfc822(self):
+    # Whoah wait I don't want to store hundreds of messages in-memory.
+    def fetch_rfc822(self, uids):
         """Fetches RFC822 data for messages in self.candidates"""
         self.rfc822 = {}
         total = 0
@@ -154,11 +175,46 @@ class IMAPPYClient(imapclient.IMAPClient):
         print("Downloaded a total of %d bytes." % total,
               file=sys.stderr)
 
+def doit(c, auid, upload=None, trash=None):
+    '''Given a UID, fetch it from the selected folder, convert it,
+    upload it to a folder, possibly trash it (copy to trash and flag \Deleted)
+
+    Inputs:
+    upload = name of upload folder
+    trash = name of trash folder'''
+
+    internaldate = c.candidates[auid]['INTERNALDATE']
+    c.fetch_rfc822(auid)
+    c.msg = c.rfc822[auid]
+    c.msg_new = convert_smimep7m_to_new_email(c.msg)
+    
+    if upload is not None:
+        print("Uploading..", end="",
+              file=sys.stderr)
+        c.append(upload,c.msg_new.as_string(),msg_time=internaldate)
+        print(".done", file=sys.stderr)
+
+    if trash is not None:
+        print("Copying to trash.", end="", file=sys.stderr)
+        c.copy(auid, trash)
+        c.add_flags(auid, r'\Deleted')
+        print("..and flagged as deleted, ready for expunge.")
+
+    # ...free memory
+    c.rfc822 = {}
+    c.msg = ""
+    c.msg_new = ""
+    return None
+
+
+
 #end class IMAPPYClient
 
 
 def has_smimep7m(b):
-    """Simplistic check for smime.p7m attachment."""
+    """Simplistic check for smime.p7m attachment.
+    Input: a tuple representing a BODY fetch result from imapclient.
+    Returns: Boolean true/false."""
 
     # This is madness!
     # I need a proper parser!
@@ -234,32 +290,68 @@ def convert_smimep7m_to_new_email(msg):
     return msg_new
 
 
+
+
+h = {}                          # host dict
+u = {}                          # user dict
+c = None                        # connection
+folders = []
+folder_del = 'Deleted Items'
+folder_src = ''
+folder_dest = ''
+
+def do_login(conf_file="~/Private/.imappy-exchange.ini"):
+    global h
+    global u
+    global c
+    global folders
+    h,u = get_conf(conf_file)
+    c = IMAPPYClient(**h)
+    c.login(**u)
+    folders = [f[2] for f in c.list_folders()]
+    return c
+    
+
+
     
 def main():
     """
 Usage:
+import imappy
+import email
 
 h,u = imappy.get_conf( '~/Private/.imappy-exchange.ini' )
 ###(possibly enter password)
 c = imappy.IMAPPYClient(**h)
 c.login(**u)
 folders = [f[2] for f in c.list_folders()]
-f = 'test-from-outlook'
-c.select_folder(f)
+folder_del = 'Deleted Items'
+folder_src = 'test-from-outlook'
+folder_dest = 'new-upload'
+c.select_folder(folder_src)
 
 ### start finding canditates
-uids = c.search()
-c.get_bodies(uids)
-c.find_candidates()
-c.fetch_rfc822()
+uids = c.search('all')
+c.get_bodies(uids)              # result in c.bodies
+c.analyze_bodies()              # result in c.candidates
 
-# c.bodies and c.candidates and c.rfc822 are all keyed on UID
-# iterate...
+cuids = c.candidates.keys()
 
-uid = c.rfc822.keys()[0]
-internaldate = c.candidates[uid]['INTERNALDATE']
-msg = c.rfc822[uid]
-msg_new = imappy.convert_smimep7m_to_new_email(msg)
+first = cuids[0:1]
+
+for auid in first:
+    imappy.doit(c, auid, upload=folder_dest, trash=folder_del)
+
+
+#mostly done
+
+#to see what will be expunged
+c.search('deleted')
+
+c.expunge()
+
+
+############################################################
 
 # could check structure with   email.iterators._structure(msg_new)
 
@@ -268,24 +360,31 @@ msg_new.get_payload(0).get_payload(0).get_payload()
 msg_new.get_payload(0).get_payload(1).get_payload(0).get_payload()
 
 p = msg.get_payload(0)
+
 (mt,st) = (p.get_content_maintype() , p.get_content_subtype())
 for subpart in email.iterators.typed_subpart_iterator(msg, mt, st):
     pl = subpart.get_payload(decode=True)
-    print(pl[:1500])
     break
 
 for subpart in email.iterators.typed_subpart_iterator(msg_new,mt,st):
-    pl = subpart.get_payload(decode=True)
-    print(pl[:1500])
+    pl_new = subpart.get_payload(decode=True)
     break
 
+if text/html:
+parser = imappy.MyHTMLParser()
+parser.feed(pl)
+pl_text = parser.mydata
+pl_tags = parser.mytags
+parser.clean()
+parser.feed(pl_new)
+pl_text_new = parser.mydata
+pl_tags_new = parser.mytags
+parser.clean()
+pl_tags == pl_tags_new
+pl_text == pl_text_new
 
 
-# DOIT but maybe new f
-try:
-    c.append(f,msg_new.as_string(),msg_time=internaldate)
-except imapclient.IMAPClient.Error as e:
-    print(e)
+############################## 
 
 """
     print ("hi")
