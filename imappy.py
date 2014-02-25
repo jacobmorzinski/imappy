@@ -159,13 +159,15 @@ class IMAPPYClient(imapclient.IMAPClient):
     # Don't call it from wrong folder, without proper preparation, etc.
     # Whoah wait I don't want to store hundreds of messages in-memory.
     def fetch_rfc822(self, uids):
-        """Fetches RFC822 data for messages in self.candidates"""
+        """Fetches RFC822 data for given uids"""
         self.rfc822 = {}
         total = 0
-        count = len(self.candidates)
+        if not isinstance(uids, (list,tuple)):
+            uids = [uids]
+        count = len(uids)
         print("Downloading %d full messages." % count,
               end="", file=sys.stderr)
-        for _,k in enumerate(self.candidates):
+        for _,k in enumerate(uids):
             print(".", end="", file=sys.stderr)
             d = self.fetch(k,'RFC822')[k]['RFC822']
             msg = email.message_from_string(d)
@@ -174,6 +176,9 @@ class IMAPPYClient(imapclient.IMAPClient):
         print(".ok", file=sys.stderr)
         print("Downloaded a total of %d bytes." % total,
               file=sys.stderr)
+
+#end class IMAPPYClient
+
 
 def doit(c, auid, upload=None, trash=None):
     '''Given a UID, fetch it from the selected folder, convert it,
@@ -207,8 +212,6 @@ def doit(c, auid, upload=None, trash=None):
     return None
 
 
-
-#end class IMAPPYClient
 
 
 def has_smimep7m(b):
@@ -342,6 +345,10 @@ first = cuids[0:1]
 for auid in first:
     imappy.doit(c, auid, upload=folder_dest, trash=folder_del)
 
+del(cuids[0:1])
+
+#first = cuids[0:2]
+#...etc
 
 #mostly done
 
